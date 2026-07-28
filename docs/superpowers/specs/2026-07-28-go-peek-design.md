@@ -65,9 +65,12 @@ Estensioni e MIME:
 - immagini: `.png` `image/png`, `.jpg` `.jpeg` `image/jpeg`, `.webp` `image/webp`, `.gif` `image/gif`
 - video: `.mp4` `video/mp4`, `.mpeg` `video/mpeg`, `.mov` `video/mov`, `.webm` `video/webm`
 
-`--low` aggiunge `media_resolution: "low"` al livello top del body. Il parametro è nativo di
-Gemini e non è documentato da OpenRouter, che però dichiara di inoltrare anche parametri fuori
-dalla propria lista. **Non verificato** — vedi "Verifica manuale".
+`--low` aggiunge `media_resolution: "MEDIA_RESOLUTION_LOW"` al livello top del body. Il valore
+è l'enum di Gemini: la stringa `"low"` viene rifiutata con un 400 che elenca i valori ammessi.
+
+Verificato contro l'API live il 2026-07-28: OpenRouter valida e inoltra il parametro, e sullo
+stesso video di 9 secondi i token video passano da 2.630 a 710, fattore 3,7. Il link YouTube
+viene instradato automaticamente su Google AI Studio, senza bisogno di forzare il provider.
 
 Timeout: 300 secondi. Più alto dei 180 di `bananao` perché l'upload di un video pesante e
 l'analisi di un'ora di girato stanno su scale diverse dalla generazione di un'immagine.
@@ -129,6 +132,11 @@ messaggio il suggerimento di rilanciare con `--low`.
 Il video viene campionato a 1 frame al secondo: ~300 token per secondo a risoluzione default,
 ~100 in bassa. Una singola immagine sono 258 token.
 
+**L'audio del video viene tokenizzato a parte** e `--low` non lo riduce: sul video di prova
+sono 292 token per 9 secondi, cioè ~32 al secondo. Vale ~11% in più sull'input rispetto al
+solo conteggio dei frame, e in bassa risoluzione diventa la voce dominante. Le stime in
+`docs/occhi-economici-per-claude.md` non lo includono.
+
 ## Verifica manuale
 
 Il repo non ha infrastruttura di test. La verifica è una checklist da eseguire a mano.
@@ -149,11 +157,10 @@ Percorsi che spendono, in ordine di costo crescente:
 9. Un URL di immagine remoto → stesso risultato.
 10. Più immagini in una chiamata → la risposta le distingue.
 11. Un video locale breve (< 30s) → la risposta contiene timestamp.
-12. Un link YouTube → funziona, e conferma il provider Google AI Studio.
-13. **`--low` sullo stesso video del punto 11**: confrontare i token di input riportati su
-    stderr con e senza il flag. Attesa: circa un terzo. Se il numero non cambia, OpenRouter non
-    inoltra `media_resolution` — in quel caso rimuovere il flag e documentare in `SKILL.md` che
-    i video oltre ~50 minuti non sono analizzabili.
+12. Un link YouTube → funziona. **Già verificato il 2026-07-28**: 9 secondi, $0,0007, provider
+    Google AI Studio scelto automaticamente.
+13. `--low` sullo stesso video: i token video devono scendere di circa un fattore 3. **Già
+    verificato**: 2.630 → 710.
 
 ## Fuori scope
 
