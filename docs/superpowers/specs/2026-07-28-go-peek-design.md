@@ -314,18 +314,15 @@ Quindi:
 Un'ora di audio costa ~1,7 centesimi. È la parte a buon mercato, e regge il filo del discorso
 che il taglio del video spezzerebbe.
 
-**Verificato il 2026-07-28.** La traccia estratta con ffmpeg in mp3 e inviata come
-`{"type":"input_audio","input_audio":{"data":"<base64>","format":"mp3"}}` passa senza problemi:
-su 30 secondi di parlato, `video_tokens` a **zero** e 775 token audio. È il punto che regge
-tutta la strategia — mandando la sola traccia non si paga un solo fotogramma.
+**Il trasporto è verificato, la qualità no.** Il 2026-07-28 la traccia estratta con ffmpeg in
+mp3 e inviata come `{"type":"input_audio","input_audio":{"data":"<base64>","format":"mp3"}}` è
+passata senza problemi: `video_tokens` a **zero** e 775 token audio contati. È il punto che
+regge tutta la strategia — mandando la sola traccia non si paga un solo fotogramma.
 
-I timestamp escono in formato SRT **con i millisecondi** (`0:00:00.911 --> 0:00:01.871`), non
-in MM:SS come dichiara la documentazione Google. Per sincronizzare sottotitoli è più che
-sufficiente: l'idea che serva un ASR dedicato sotto il secondo va abbandonata, almeno a
-livello di segmento.
-
-Su una trascrizione **il costo è dominato dall'output**, non dall'input: 815 token in ingresso
-contro ~4.250 in uscita nella prova. Un'ora di audio costa quindi ~1,7 centesimi, non 1,2.
+Ma il file di prova era **silenzio digitale** (`mean_volume` e `max_volume` entrambi a -91 dB),
+e il modello ha restituito una trascrizione completa e circostanziata di un parlato che non
+esiste. Quindi: il canale funziona, la resa su audio reale resta da misurare. Vedi "Il
+silenzio produce confabulazione".
 
 ## Errori
 
@@ -339,6 +336,7 @@ contro ~4.250 in uscita nella prova. Un'ora di audio costa quindi ~1,7 centesimi
 | `HTTP 400` altro | media non accettato da quel modello |
 | `HTTP 502` con corpo HTML | richiesta troppo pesante: è il fallimento che la compressione evita |
 | risposta tronca due volte di fila | vedi "Risposte tronche" |
+| traccia audio sotto la soglia di silenzio | non è un errore: si spedisce con `-an` e si dichiara su stderr |
 | `durata × --fps` oltre il tetto di contesto | guardia locale via ffprobe, l'API non viene chiamata |
 | `nessuna risposta entro 300s` | timeout di rete, riprovare una volta sola |
 | input locale ancora sopra i 10 MB dopo la compressione | guardia locale, l'API non viene chiamata |
@@ -358,16 +356,45 @@ default, ~79 in bassa — gli stessi 258 di una singola immagine.
 fotogrammi e traccia audio nella stessa richiesta: è il motivo per cui ogni prova riportava
 token audio che non avevamo domandato, 292 sul video di YouTube e 775 sulla registrazione
 schermo. Costa 32 token al secondo, `--low` non lo riduce, e l'unico modo di non pagarlo è
-toglierlo noi con ffmpeg — cosa che facciamo solo in FBF.
+toglierlo noi con ffmpeg.
 
-Non è un sottoprodotto: Gemini fa trascrizione verbatim con timestamp al millisecondo in
-formato SRT, diarizzazione dei parlanti, riconoscimento di suoni non verbali e del tono. Regge
-9,5 ore per richiesta contro l'ora scarsa del video, e un'ora costa ~1,7 centesimi. Per
-confronto, Whisper via API di OpenAI costa 36 centesimi l'ora: una pipeline audio separata ha
-senso solo in locale, e non per risparmiare.
+Quei 775 token, tra l'altro, erano **silenzio**: la registrazione schermo ha una traccia AAC
+regolare e completamente muta, pagata a peso pieno in ogni chiamata che la includeva.
+
+Sulla carta non è un sottoprodotto: Google dichiara trascrizione verbatim con timestamp,
+diarizzazione dei parlanti, riconoscimento di suoni non verbali e del tono. Regge 9,5 ore per
+richiesta contro l'ora scarsa del video, e un'ora costa ~1,7 centesimi — di cui 1,15 di input,
+solidi, e il resto stimato sulla lunghezza di una trascrizione che era inventata, quindi
+indicativo. Per confronto, Whisper
+via API di OpenAI costa 36 centesimi l'ora: una pipeline audio separata ha senso solo in
+locale, e non per risparmiare.
 
 Una parte di **solo audio** si invia come `input_audio` e non costa nessun fotogramma —
-verificato, vedi "Video lunghi".
+verificato, vedi "Video lunghi". Nessuna delle capacità dichiarate sopra è invece ancora stata
+verificata su audio reale.
+
+### Il silenzio produce confabulazione
+
+Il 2026-07-28, chiesta la trascrizione di una traccia di **silenzio digitale**, la risposta è
+stata una testimonianza personale di circa venti battute, con esitazioni, cambi di argomento,
+date, e timestamp in formato SRT al millisecondo. Niente di tutto ciò esisteva nel file.
+
+Due cose da portarsi dietro.
+
+**La precisione finta è più pericolosa dell'errore evidente.** Quei timestamp al millisecondo
+sono stati presi, sul momento, come prova che il modello fosse più preciso di quanto la
+documentazione dichiarasse. Erano l'ornamento dell'invenzione. Un output che espone cifre
+precise non è per questo più affidabile — spesso è il contrario, perché la precisione è la
+cosa più facile da simulare.
+
+**Una traccia muta va tolta prima di spedire.** Costa 32 token al secondo e in cambio induce
+il modello a inventare: è l'unico caso in cui rimuovere un input migliora la risposta invece di
+impoverirla. Lo script misura il livello con `ffmpeg -af volumedetect` prima della chiamata e,
+se il massimo sta sotto una soglia di silenzio, procede con `-an` e lo dichiara su stderr.
+
+Vale la pena notare che il video di quella stessa registrazione era stato letto benissimo. Il
+modello non è inaffidabile in generale: lo diventa quando l'input non contiene la risposta e
+la domanda presuppone che la contenga.
 
 Le stime in `docs/occhi-economici-per-claude.md` includono l'audio; quelle dell'articolo di
 partenza no.
@@ -410,9 +437,11 @@ Percorsi che spendono, in ordine di costo crescente:
     deve uscire come 200 ms.
 17. `--fps max` su una sorgente di frame rate noto: i fotogrammi analizzati devono coincidere
     con `nb_frames` di ffprobe. Sul video di prova a 24 fps sono 240.
-18. Parte di solo audio via `input_audio`. **Già verificato il 2026-07-28** su 30 secondi di
-    parlato: `video_tokens` a zero, 775 token audio, $0,0018, trascrizione con timestamp al
-    millisecondo.
+18. Parte di solo audio via `input_audio`. Trasporto **già verificato il 2026-07-28**:
+    `video_tokens` a zero, 775 token audio, $0,0018. La resa su **audio reale** no — la prova
+    girava su una traccia muta. Da rifare su parlato vero prima di fidarsi della trascrizione.
+18b. Traccia muta → lo script la rileva con `volumedetect`, spedisce con `-an` e lo dichiara.
+    Controprova: senza la guardia, la stessa traccia produce una trascrizione inventata.
 19. Taglio e ricucitura su un file locale oltre il tetto: gli offset dei timestamp del secondo
     segmento devono essere sommati correttamente, e i confini dichiarati nell'output.
 
