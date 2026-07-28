@@ -1,0 +1,14 @@
+.DS_Store
+node_modules/
+
+# Difesa in profondità: nessuna credenziale deve finire in questa repo pubblica.
+# Le chiavi vivono in ~/.config/<skill>/config.json, mai qui.
+config.json
+*.key
+.env
+.env.*
+
+# Immagini generate durante i test manuali della skill.
+*.png
+*.jpg
+*.webp
