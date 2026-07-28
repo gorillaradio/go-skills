@@ -36,9 +36,53 @@ La domanda è posizionale, i media sono ripetibili con `-i` — identico a `bana
 | `-o, --out <path>` | file su cui salvare la risposta; le cartelle mancanti vengono create | nessuno |
 | `-m, --model <id>` | qualunque modello OpenRouter con input video o image | `google/gemini-2.5-flash-lite` |
 | `--low` | booleano; invia `media_resolution: "MEDIA_RESOLUTION_LOW"` | risoluzione default del modello |
+| `--fps <n>` | intero ≥ 1; fotogrammi campionati per secondo reale di video | `1` |
 | `-h, --help` | | |
 
-Almeno un `-i` è obbligatorio. La domanda è obbligatoria.
+Almeno un `-i` è obbligatorio. La domanda è obbligatoria. `--low` e `--fps` maggiore di 1
+insieme sono ammessi ma contraddittori: uno toglie dettaglio spaziale, l'altro ne aggiunge di
+temporale. Lo script non lo impedisce, `SKILL.md` lo sconsiglia.
+
+## `--fps`: vedere quello che un fotogramma al secondo nasconde
+
+Gemini campiona il video a 1 frame al secondo, punto: non è configurabile e OpenRouter non
+espone nessun parametro per cambiarlo. Un'animazione di interfaccia dura 200-400 ms, quindi a
+quel campionamento è invisibile per costruzione — il modello la liquida come "appare
+istantaneamente", che non è un'osservazione ma un artefatto del campionamento.
+
+La leva è rallentare il video: distribuire 10 secondi su 50 fa sì che il campionamento a 1 fps
+ne raccolga cinque volte tanti. `--fps 5` fa esattamente questo.
+
+Meccanica:
+
+1. `ffprobe` legge la durata reale del video.
+2. Se `durata × n` supera il tetto di contesto, errore prima di spendere, con i numeri in
+   chiaro. Il tetto è ~53 minuti di girato inviato, quindi `--fps 5` regge 10 minuti reali e
+   `--fps 2` ne regge 26.
+3. `ffmpeg` ricodifica con `setpts=<n>*PTS` e `-an`. L'audio viene buttato: rallentato non
+   dice più niente, e a n volte la durata i suoi ~30 token al secondo diventerebbero la voce
+   dominante del conto.
+4. Alla domanda dell'utente lo script aggiunge l'istruzione di marcare ogni istante come
+   `[t=<secondi>]` e ogni durata come `[d=<secondi>]`, in tempo-video.
+5. Sulla risposta lo script riscrive i marcatori dividendo per `n`, e li stampa in
+   millisecondi reali.
+
+**La conversione la fa lo script, non il modello.** Verificato il 2026-07-28: informato del
+fattore di rallentamento, `gemini-2.5-flash-lite` sbaglia l'aritmetica — ha scritto "30
+secondi reali (6 secondi video)" su un video rallentato 5 volte, dove 6 secondi video sono
+1,2 reali. Il modello non deve sapere che il video è rallentato.
+
+Un marcatore malformato viene lasciato intatto e segnalato su stderr: meglio un tempo non
+convertito e visibile che una conversione silenziosamente sbagliata.
+
+Guadagno misurato sullo stesso video di 10 secondi, stessa domanda:
+
+| | `--fps 1` | `--fps 5` |
+|---|---|---|
+| transizione del contatore | "appare istantaneamente" | scorrimento verticale, ~200 ms, snap in uscita |
+| arco del timer | "cerchio verde in senso orario" | riduzione antioraria, ciclo da 1 s |
+| token video | 2.580 | 12.900 |
+| costo | $0,0016 | $0,0025 |
 
 ## Costruzione della richiesta
 
@@ -85,6 +129,17 @@ l'analisi di un'ora di girato stanno su scale diverse dalla generazione di un'im
   sarebbe silenziosa, qui il contenuto è riproducibile rilanciando il comando.
 - **errore**: stdout vuoto, messaggio su stderr, exit 1. Se non arriva testo, non c'è stata
   nessuna analisi.
+
+### Risposte tronche
+
+Una risposta HTTP 200 non basta a dire che l'analisi è riuscita. Osservato il 2026-07-28: una
+richiesta è tornata con testo interrotto a metà frase, `finish_reason` assente, `usage` a zero
+e costo zero. Rilanciata identica ha funzionato. Non è un errore di rete e non è un 4xx: è una
+risposta formalmente valida e monca, che uno script ingenuo stampa come buona.
+
+Lo script la riconosce da `finish_reason !== "stop"` oppure `usage.prompt_tokens === 0`, e
+riprova **una volta sola**. Se anche il secondo tentativo è tronco, esce con codice 1 senza
+stampare niente su stdout — coerente con la regola che stdout vuoto significa nessuna analisi.
 
 ## Chiave API
 
@@ -141,9 +196,11 @@ I numeri di durata sono di Google e coincidono con i token misurati: 298 token a
 risoluzione default (266 video + 32 audio) riempiono 1.048.576 token in 59 minuti; 111 al
 secondo con `--low` in 2,6 ore.
 
-**Nessun controllo automatico della durata**: leggerla richiederebbe di scaricare il video o
-di interrogare l'API di YouTube. Quando l'API risponde con un errore di contesto, lo script
-aggiunge al messaggio il suggerimento di rilanciare con `--low`.
+**Nessun controllo automatico della durata su questo percorso**: leggerla richiederebbe di
+scaricare il video o di interrogare l'API di YouTube. È la differenza con i file locali, dove
+`ffprobe` — che arriva con ffmpeg, già obbligatorio — permette di stimare i token prima di
+spendere. Quando l'API risponde con un errore di contesto, lo script aggiunge al messaggio il
+suggerimento di rilanciare con `--low`.
 
 Oltre le ~3 ore non esiste soluzione dentro la skill: né OpenRouter né la documentazione
 Gemini espongono un modo di ritagliare un intervallo attraverso questa forma di richiesta.
@@ -160,6 +217,8 @@ La via d'uscita è scaricare il video, tagliarlo con ffmpeg e passare il file lo
 | `HTTP 400` con menzione del contesto | video troppo lungo → suggerire `--low` |
 | `HTTP 400` altro | media non accettato da quel modello |
 | `HTTP 502` con corpo HTML | richiesta troppo pesante: è il fallimento che la compressione evita |
+| risposta tronca due volte di fila | vedi "Risposte tronche" |
+| `durata × --fps` oltre il tetto di contesto | guardia locale via ffprobe, l'API non viene chiamata |
 | `nessuna risposta entro 300s` | timeout di rete, riprovare una volta sola |
 | input locale ancora sopra i 10 MB dopo la compressione | guardia locale, l'API non viene chiamata |
 
@@ -208,6 +267,13 @@ Percorsi che spendono, in ordine di costo crescente:
     Google AI Studio scelto automaticamente.
 13. `--low` sullo stesso video: i token video devono scendere di circa un fattore 3. **Già
     verificato**: 2.630 → 710.
+14. `--fps 5` su un video con animazioni di interfaccia: i token video salgono di ~5 volte e la
+    risposta descrive transizioni che a `--fps 1` risultavano istantanee. **Già verificato il
+    2026-07-28** su un video di 10 secondi: 2.580 → 12.900 token, e la transizione del
+    contatore passa da "appare istantaneamente" a "scorrimento verticale di ~200 ms".
+15. `--fps 5` su un video di 15 minuti → guardia via ffprobe, nessuna chiamata di rete.
+16. Marcatori `[t=]` e `[d=]` riscritti correttamente: un `[d=1.0]` in un video a `--fps 5`
+    deve uscire come 200 ms.
 
 ## Fuori scope
 
