@@ -40,11 +40,13 @@ export const VIDEO_MIME = {
 const SETUP = `Configura la chiave una volta sola (vale per tutta la famiglia go-*).
 
 1. Crea una chiave dedicata su https://openrouter.ai/keys
-2. Esegui (sostituendo sk-or-v1-XXXX con la tua chiave):
+2. Esegui nel tuo terminale; la chiave viene chiesta con read -s,
+   così non resta né a video né nella history della shell:
 
-  mkdir -p ~/.config/go-skills && \\
-  printf '{"apiKey":"sk-or-v1-XXXX"}' > ~/.config/go-skills/config.json && \\
-  chmod 600 ~/.config/go-skills/config.json
+  mkdir -p ~/.config/go-skills
+  read -s "?Incolla la chiave OpenRouter (sk-or-v1-...): " KEY && \\
+  printf '{"apiKey":"%s"}' "$KEY" > ~/.config/go-skills/config.json && \\
+  chmod 600 ~/.config/go-skills/config.json && unset KEY && echo " -> chiave salvata"
 `;
 
 export function fail(skill, msg) {

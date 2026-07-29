@@ -22,10 +22,15 @@ nella conversazione, quindi non viene ripagato a ogni turno.
 
 ## Installazione
 
+Clona la repo dove preferisci, poi crea i symlink dalla cartella clonata:
+
 ```bash
-git clone https://github.com/gorillaradio/go-skills.git ~/Dev/gorillaradio/go-skills
-for s in bananao go-glance go-watch go-scrub go-listen; do
-  ln -s ~/Dev/gorillaradio/go-skills/skills/$s ~/.claude/skills/$s
+git clone https://github.com/gorillaradio/go-skills.git
+```
+
+```bash
+cd go-skills && for s in bananao go-glance go-watch go-scrub go-listen; do
+  ln -s "$(pwd)/skills/$s" ~/.claude/skills/$s
 done
 ```
 
@@ -50,12 +55,25 @@ Nessuna skill di questa repo contiene credenziali: **la repo è pubblica.** Le c
 sovrascrivono e non finiscono nel repo.
 
 - `bananao` → `~/.config/bananao/config.json` (vedi il suo [SKILL.md](skills/bananao/SKILL.md))
-- famiglia `go-*` → `~/.config/go-skills/config.json`, un'unica chiave per tutte:
+- famiglia `go-*` → `~/.config/go-skills/config.json`, un'unica chiave per tutte.
+
+Setup da terminale. Il secondo comando chiede la chiave con `read -s`, così non resta né a video
+né nella history della shell (incollarla dentro un comando ce la lascerebbe):
 
 ```bash
-mkdir -p ~/.config/go-skills && \
-printf '{"apiKey":"sk-or-v1-XXXX"}' > ~/.config/go-skills/config.json && \
-chmod 600 ~/.config/go-skills/config.json
+mkdir -p ~/.config/go-skills
+```
+
+```bash
+read -s "?Incolla la chiave OpenRouter (sk-or-v1-…): " KEY && \
+printf '{"apiKey":"%s"}' "$KEY" > ~/.config/go-skills/config.json && \
+chmod 600 ~/.config/go-skills/config.json && unset KEY && echo " → chiave salvata"
+```
+
+Verifica — deve rispondere `-rw-------` (permessi 600, solo il tuo utente la legge):
+
+```bash
+ls -l ~/.config/go-skills/config.json
 ```
 
 Regole, tutte deliberate:
