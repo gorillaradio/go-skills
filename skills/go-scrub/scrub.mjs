@@ -132,9 +132,15 @@ if (size > MAX_UPLOAD_BYTES) {
 // Il modello non deve sapere che il video è rallentato: informato del fattore
 // sbaglia l'aritmetica (verificato il 2026-07-28). Marca i tempi in tempo-video,
 // la conversione in tempo reale la facciamo noi sotto.
+//
+// La durata va invece dichiarata, ed è quella vera del file rallentato: senza
+// ancoraggio il modello sceglie numeri piccoli e i tempi escono compressi di
+// un ordine di grandezza (verificato il 2026-07-29, un esempio con un numero
+// basso nel prompt bastava a produrre durate di 8 ms su una risoluzione di 42).
+const slowedDuration = Math.round(duration * n);
 const question = `${opts.question}
 
-Marca ogni istante rilevante come [t=<secondi>] e ogni durata come [d=<secondi>], in secondi del video, con i decimali. Se qualcosa non è osservabile nei fotogrammi, dichiaralo invece di stimarlo.`;
+Questo video dura ${slowedDuration} secondi. Marca ogni istante rilevante come [t=<tempo>] e ogni durata come [d=<tempo>], riferiti a questa durata, in secondi decimali (es. [t=${(slowedDuration * 0.4).toFixed(1)}]) oppure in mm:ss. Se qualcosa non è osservabile nei fotogrammi, dichiaralo invece di stimarlo.`;
 
 const { text, usage } = await chat(SKILL, {
   apiKey, model,
@@ -144,11 +150,22 @@ const { text, usage } = await chat(SKILL, {
   ],
 });
 
+// Il modello scrive i tempi come gli pare: 1.5, "1,5s", oppure mm:ss anche
+// quando la domanda chiede secondi decimali (osservato il 2026-07-29). Vanno
+// accettati tutti, perché un formato non riconosciuto lascia sull'output un
+// tempo in tempo-video, cioè sbagliato di n volte.
+function toSeconds(raw) {
+  const parts = raw.replace(",", ".").split(":").map((p) => Number.parseFloat(p));
+  if (!parts.length || parts.some((p) => !Number.isFinite(p))) return undefined;
+  return parts.reduce((acc, p) => acc * 60 + p, 0);
+}
+
 // Riscrittura dei marcatori in millisecondi reali. Un marcatore malformato
 // resta intatto e viene segnalato: meglio visibile che convertito male.
-const converted = text.replace(/\[([td])=\s*(\d+(?:[.,]\d+)?)\s*(?:s(?:ec)?)?\s*\]/g, (_, kind, num) => {
-  const ms = Math.round((Number.parseFloat(num.replace(",", ".")) / n) * 1000);
-  return `[${kind}=${ms}ms]`;
+const converted = text.replace(/\[([td])=\s*([\d.,:]+)\s*(?:s(?:ec)?)?\s*\]/g, (whole, kind, raw) => {
+  const seconds = toSeconds(raw);
+  if (seconds === undefined) return whole;
+  return `[${kind}=${Math.round((seconds / n) * 1000)}ms]`;
 });
 const leftover = (converted.match(/\[[td]=[^\]]*\]/g) || []).filter((m) => !/^\[[td]=\d+ms\]$/.test(m));
 if (leftover.length) {
