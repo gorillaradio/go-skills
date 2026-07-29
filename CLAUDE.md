@@ -19,14 +19,9 @@ senza capire quale meccanismo serve.
 
 ```
 skills/
-  _lib/                 # codice condiviso dalla famiglia go-* (vedi sotto)
   bananao/
     SKILL.md            # frontmatter name + description, poi uso
     generate-image.mjs  # CLI eseguibile, zero dipendenze
-  go-glance/            # immagini singole o cartelle
-  go-watch/             # contenuto di un video, audio incluso
-  go-scrub/             # animazioni di UI, fotogramma per fotogramma
-  go-listen/            # audio: trascrizione e diarizzazione
 ```
 
 ## Convenzioni
@@ -35,59 +30,9 @@ skills/
 - La `description` dice **quando** usare la skill, non come funziona: è l'unica cosa che l'agente
   legge per decidere se caricarla. Niente riassunti del workflow lì dentro — l'agente seguirebbe il
   riassunto invece di leggere il corpo.
-- Script senza dipendenze npm. Node stdlib o Python stdlib, nessun `npm install`.
-  **Deroga: la famiglia `go-*` richiede `ffmpeg` nel PATH** — vedi sotto.
+- Script senza dipendenze (Node stdlib o Python stdlib). Nessun `npm install`.
 - Risultato utile su **stdout**, diagnostica su **stderr**, così l'output è catturabile con `$(...)`.
-- Nessuna credenziale nella repo: **è pubblica**. Le chiavi stanno in `~/.config/`, chmod 600.
-  `bananao` usa `~/.config/bananao/config.json`; la famiglia `go-*` un file unico, vedi sotto.
-
----
-
-# La famiglia go-*
-
-Quattro skill che danno a Claude occhi e orecchie economici, delegando a un modello a basso costo
-via OpenRouter. Sono **quattro mestieri separati**, non quattro modalità di uno: `go-scrub` studia
-come si muove un'interfaccia, `go-watch` capisce cosa succede in un video, `go-listen` trascrive,
-`go-glance` guarda immagini. Design completo in `docs/superpowers/specs/`.
-
-## Una chiave sola, con separazione opzionale
-
-`~/.config/go-skills/config.json`, chmod 600. Un campo per skill più un default che vale per quelle
-senza campo proprio.
-
-Il senso: parti con la stessa chiave dappertutto e un solo passaggio di setup; il giorno che i costi
-salgono e vuoi sapere **chi** li sta facendo salire, separi le chiavi editando quel file — senza
-toccare percorsi, codice, né `settings.json`.
-
-Resta valida la regola di `bananao`: **nessun fallback su `OPENROUTER_API_KEY` generica.** La chiave
-deve restare isolata perché la spesa sia leggibile sulla dashboard e la revoca chirurgica.
-
-`bananao` non si tocca: continua a usare il suo file. Migrarla sarebbe un cambio gratuito di una
-cosa che funziona, e richiederebbe di aggiornare anche il `deny` in `settings.json`.
-
-## ffmpeg è obbligatorio, ed è una deroga consapevole
-
-Senza ffmpeg queste skill non sono utilizzabili sui file che le persone hanno davvero: le
-registrazioni schermo superano quasi sempre il limite di caricamento, e vanno compresse prima di
-essere spedite. Serve anche per rallentare i video (`go-scrub`), estrarre l'audio (`go-listen`) e
-leggere durata e frame rate con `ffprobe`.
-
-## L'unità distribuibile è la repo, non la cartella
-
-Con `skills/_lib/` condivisa, `skills/go-watch/` copiata da sola non funziona più. Il symlink regge
-— Node risolve al percorso reale, verificato — ma la copia no. `bananao` resta autonoma.
-
-Nella lib va **solo il trasporto**: caricamento della chiave, chiamata a OpenRouter, riconoscimento
-della risposta tronca con ritentativo, riga di token e costo, base64 e MIME. Ogni guardia specifica
-resta nella skill che la usa.
-
-## Ogni numero vive in un posto solo
-
-Modello di default, prezzo per milione, token per fotogramma, token al secondo dell'audio: sono gli
-stessi valori in quattro `SKILL.md`. Se vengono ricopiati, il giorno che ne cambia uno le altre tre
-restano indietro e nessuno se ne accorge, perché l'agente legge una `SKILL.md` per volta.
-
-Le costanti stanno nella lib, i fatti economici in un documento solo, e ogni `SKILL.md` ci rimanda.
+- Nessuna credenziale nella repo: **è pubblica**. Le chiavi vivono in `~/.config/<skill>/`, chmod 600.
 
 ---
 
