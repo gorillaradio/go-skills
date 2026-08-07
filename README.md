@@ -15,10 +15,14 @@ symlink in `~/.claude/skills/`. Non è un marketplace di plugin — per quello v
 | [`go-watch`](skills/go-watch/) | Racconta il contenuto di un video, audio incluso, anche link YouTube |
 | [`go-scrub`](skills/go-scrub/) | Misura le animazioni di UI fotogramma per fotogramma, in millisecondi reali |
 | [`go-listen`](skills/go-listen/) | Trascrive e diarizza l'audio, anche estratto da un video |
+| [`report-open`](skills/report-open/) | Apre un documento in un reader desktop e ne posiziona la finestra (macOS) |
 
 La famiglia `go-*` dà a Claude occhi e orecchie economici: un modello a basso costo via OpenRouter
 guarda o ascolta il media e restituisce testo, Claude ragiona solo sul testo. Il media non entra mai
 nella conversazione, quindi non viene ripagato a ogni turno.
+
+`report-open` sta fuori da quella famiglia: non delega niente a un modello, serve a far leggere un
+documento all'umano invece di stamparlo nel terminale.
 
 ## Installazione
 

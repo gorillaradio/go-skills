@@ -1,0 +1,48 @@
+#!/usr/bin/env bash
+# Apre un documento in un'app di lettura e ne posiziona la finestra.
+# macOS. Usa gli Apple Events diretti: nessun permesso Accessibilità.
+#
+#   report-open <file>
+#
+# Variabili:
+#   REPORT_APP      app di lettura            (default: Typora)
+#   REPORT_SIDE     right | left | full       (default: right)
+#   REPORT_FRACTION frazione di larghezza     (default: 0.25)
+#   REPORT_BOUNDS   "sx, alto, dx, basso"     scavalca SIDE e FRACTION
+set -euo pipefail
+
+f="${1:?uso: report-open <file>}"
+app="${REPORT_APP:-Typora}"
+side="${REPORT_SIDE:-right}"
+fraction="${REPORT_FRACTION:-0.25}"
+
+if [ -n "${REPORT_BOUNDS:-}" ]; then
+  bounds="$REPORT_BOUNDS"
+else
+  # Risoluzione logica dello schermo principale, senza permessi speciali.
+  read -r sw sh <<<"$(osascript -e 'tell application "Finder" to get bounds of window of desktop' \
+    | awk -F', *' '{print $3, $4}')"
+  [ -n "${sw:-}" ] && [ -n "${sh:-}" ] || { echo "report-open: schermo non rilevato." >&2; exit 1; }
+
+  w=$(awk -v s="$sw" -v f="$fraction" 'BEGIN{printf "%d", s*f}')
+  case "$side" in
+    right) bounds="$((sw - w)), 0, $sw, $sh" ;;
+    left)  bounds="0, 0, $w, $sh" ;;
+    full)  bounds="0, 0, $sw, $sh" ;;
+    *)     echo "report-open: REPORT_SIDE non valido: $side" >&2; exit 2 ;;
+  esac
+fi
+
+open -a "$app" "$f"
+
+# Riprova finché la finestra esiste (esistenza, non fuoco).
+for _ in $(seq 25); do
+  if osascript -e "tell application \"$app\" to set bounds of window 1 to {$bounds}" \
+       >/dev/null 2>&1; then
+    exit 0
+  fi
+  sleep 0.2
+done
+
+echo "report-open: $app non ha risposto, o non espone le finestre via AppleScript." >&2
+exit 1
