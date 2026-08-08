@@ -15,14 +15,17 @@ are not enough.
 ~/.claude/skills/report-open/report-open <file>
 ```
 
-Opens the file and places its window in the right-hand quarter of the screen,
-full height. Writes nothing.
+Opens the file and places its window against the right edge of the screen, full
+height. Writes nothing.
+
+The width adapts to the display: a quarter of the screen on a wide monitor, half
+on a laptop, where a quarter would be too narrow a column to read.
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `REPORT_APP` | `Typora` | reader application |
 | `REPORT_SIDE` | `right` | `right`, `left`, or `full` |
-| `REPORT_FRACTION` | `0.25` | share of screen width |
+| `REPORT_FRACTION` | `0.25` wide / `0.5` laptop | share of screen width |
 | `REPORT_BOUNDS` | — | `"left, top, right, bottom"`, overrides side and fraction |
 
 ```bash
@@ -31,7 +34,9 @@ REPORT_APP="Obsidian" ~/.claude/skills/report-open/report-open note.md
 ```
 
 Screen size is read at runtime, so the placement follows whatever display is
-attached. macOS clamps the vertical edges itself for the menu bar and the Dock.
+attached — and so does the default fraction: below 2000 logical points wide the
+screen counts as a laptop. macOS clamps the vertical edges itself for the menu
+bar and the Dock.
 
 `REPORT_BOUNDS` takes the four **edges**, not position and size.
 

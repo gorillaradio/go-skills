@@ -7,14 +7,20 @@
 # Variabili:
 #   REPORT_APP      app di lettura            (default: Typora)
 #   REPORT_SIDE     right | left | full       (default: right)
-#   REPORT_FRACTION frazione di larghezza     (default: 0.25)
+#   REPORT_FRACTION frazione di larghezza     (default: 0.25 su schermo largo,
+#                                              0.5 su laptop)
 #   REPORT_BOUNDS   "sx, alto, dx, basso"     scavalca SIDE e FRACTION
 set -euo pipefail
+
+# Sotto questa larghezza logica lo schermo è un laptop: un quarto sarebbe una
+# colonna troppo stretta per leggere, quindi la frazione di default sale a metà.
+laptop_max_width=2000
+laptop_fraction=0.5
+wide_fraction=0.25
 
 f="${1:?uso: report-open <file>}"
 app="${REPORT_APP:-Typora}"
 side="${REPORT_SIDE:-right}"
-fraction="${REPORT_FRACTION:-0.25}"
 
 if [ -n "${REPORT_BOUNDS:-}" ]; then
   bounds="$REPORT_BOUNDS"
@@ -23,6 +29,12 @@ else
   read -r sw sh <<<"$(osascript -e 'tell application "Finder" to get bounds of window of desktop' \
     | awk -F', *' '{print $3, $4}')"
   [ -n "${sw:-}" ] && [ -n "${sh:-}" ] || { echo "report-open: schermo non rilevato." >&2; exit 1; }
+
+  if [ "$sw" -lt "$laptop_max_width" ]; then
+    fraction="${REPORT_FRACTION:-$laptop_fraction}"
+  else
+    fraction="${REPORT_FRACTION:-$wide_fraction}"
+  fi
 
   w=$(awk -v s="$sw" -v f="$fraction" 'BEGIN{printf "%d", s*f}')
   case "$side" in
