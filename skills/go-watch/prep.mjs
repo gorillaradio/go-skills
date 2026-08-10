@@ -1,0 +1,244 @@
+// go-watch prep — metadati, capitoli e trascrizione di un video YouTube.
+// Il video non viene mai scaricato: solo i metadati e la traccia audio, che
+// go-listen trascrive per qualche centesimo. È il passo che rende quasi gratis
+// tutto il resto, perché i capitoli si ricavano da qui invece che guardando.
+//
+// Tutto quello che scarica resta nella cartella di lavoro. Non è per la
+// velocità: ogni rilancio senza cache è un'altra richiesta a YouTube, che dopo
+// un po' risponde 429 e poi chiede di dimostrare di non essere un bot.
+
+import { writeFileSync, mkdirSync, existsSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
+import { fail, note } from "../_lib/openrouter.mjs";
+
+const SKILL = "go-watch prep";
+const die = (msg) => fail(SKILL, msg);
+
+export function requireYtDlp() {
+  const r = spawnSync("yt-dlp", ["--version"], { stdio: "ignore" });
+  if (r.error || r.status !== 0) {
+    die("yt-dlp non trovato nel PATH. Installa con:\n\n  brew install yt-dlp");
+  }
+}
+
+// Arrotondare prima di dividere, non dopo: con Math.round applicato ai soli
+// secondi, 59.6 diventa 00:00 (i minuti erano già stati troncati a zero).
+export const mmss = (s) => {
+  const t = Math.round(s);
+  return `${String(Math.floor(t / 60)).padStart(2, "0")}:${String(t % 60).padStart(2, "0")}`;
+};
+
+// I sottotitoli automatici di YouTube sono a scorrimento: ogni cue ripete la
+// riga precedente più una parola. Senza deduplica la trascrizione triplica.
+export function vttToBlocks(vtt, blockSeconds = 15) {
+  const out = [];
+  let ts = null;
+  for (const line of vtt.split(/\r?\n/)) {
+    const m = /^(\d\d):(\d\d):(\d\d)\.\d\d\d --> /.exec(line);
+    if (m) { ts = +m[1] * 3600 + +m[2] * 60 + +m[3]; continue; }
+    const text = line.replace(/<[^>]+>/g, "").trim();
+    if (!text || /^(WEBVTT|Kind:|Language:|NOTE)/.test(text)) continue;
+    if (out.length && out[out.length - 1].text.includes(text)) continue;
+    out.push({ ts, text });
+  }
+  const blocks = [];
+  let start = out.length ? out[0].ts : 0;
+  let buf = [];
+  for (const { ts: t, text } of out) {
+    if (t - start >= blockSeconds && buf.length) {
+      blocks.push({ start, text: buf.join(" ") });
+      buf = []; start = t;
+    }
+    buf.push(text);
+  }
+  if (buf.length) blocks.push({ start, text: buf.join(" ") });
+  return blocks;
+}
+
+// Quale traccia scaricare, decisa su info.json invece che sul contenuto della
+// cartella: scaricarne più d'una e poi prendere readdirSync()[0] significa
+// affidarsi all'ordine del filesystem, che non è ordinato affatto — con manuali
+// e automatici presenti insieme si finisce a pescare l'automatico per caso.
+export function pickSubtitleTrack(info) {
+  const preferred = [info.language, "en", "it"].filter(Boolean);
+  for (const [table, kind] of [[info.subtitles, "manuali"], [info.automatic_captions, "automatici"]]) {
+    const langs = Object.keys(table || {}).filter(l => l !== "live_chat");
+    if (!langs.length) continue;
+    for (const p of preferred) {
+      // `-orig` è la traccia nella lingua parlata davvero, non una traduzione.
+      const hit = langs.find(l => l === `${p}-orig`) || langs.find(l => l === p)
+        || langs.find(l => l.startsWith(`${p}-`));
+      if (hit) return { lang: hit, kind };
+    }
+    return { lang: langs.find(l => l.endsWith("-orig")) || langs[0], kind };
+  }
+  return null;
+}
+
+// Trascrizione dall'audio vero, non dai sottotitoli automatici di YouTube: qui
+// la punteggiatura c'è, i termini tecnici sono giusti e i parlanti sono
+// separati. Costa ~26 token al secondo di audio, qualche centesimo all'ora.
+//
+// L'm4a resta sul disco: è il pezzo più caro da riprendere, e senza cache ogni
+// rilancio è un'altra richiesta a YouTube — che dopo un po' smette di
+// rispondere e chiede di dimostrare di non essere un bot.
+const TRANSCRIBE_PROMPT = `Trascrivi integralmente l'audio, verbatim, nella lingua originale.
+Metti un marcatore di tempo [mm:ss] almeno ogni 15 secondi, e comunque a ogni cambio di parlante.
+Se i parlanti sono più di uno etichettali (Parlante 1, Parlante 2, ...) in modo coerente.
+Se un passaggio è incomprensibile scrivi [incomprensibile], non inventare.
+Non riassumere e non commentare.`;
+
+function transcribeAudio(dir, url) {
+  const audio = join(dir, "audio.m4a");
+  if (!existsSync(audio)) {
+    const r = spawnSync("yt-dlp", [
+      "--no-warnings", "-x", "--audio-format", "m4a", "-o", audio, url,
+    ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
+    if (r.status !== 0 || !existsSync(audio)) {
+      note(SKILL, `yt-dlp non riesce a scaricare l'audio, ripiego sui sottotitoli:\n${(r.stderr || "").slice(-300)}`);
+      return null;
+    }
+  }
+  const listen = join(dirname(fileURLToPath(import.meta.url)), "..", "go-listen", "listen.mjs");
+  const r = spawnSync(process.execPath, [listen, TRANSCRIBE_PROMPT, "-i", audio], {
+    encoding: "utf8", maxBuffer: 32 * 1024 * 1024, stdio: ["ignore", "pipe", "inherit"],
+  });
+  if (r.status !== 0 || !r.stdout.trim()) {
+    note(SKILL, "go-listen non ha prodotto una trascrizione, ripiego sui sottotitoli.");
+    return null;
+  }
+  // Da "[mm:ss] testo" ai blocchi "[secondi] testo" che usa il resto della
+  // pipeline. Il testo prima del primo marcatore, se c'è, parte da zero.
+  const out = [];
+  for (const line of r.stdout.split("\n")) {
+    const parts = line.split(/\[(\d+):(\d\d)\]/);
+    if (parts.length === 1) {
+      const t = line.trim();
+      if (t && out.length) out[out.length - 1].text += " " + t;
+      else if (t) out.push({ start: 0, text: t });
+      continue;
+    }
+    if (parts[0].trim() && out.length) out[out.length - 1].text += " " + parts[0].trim();
+    for (let i = 1; i < parts.length; i += 3) {
+      const text = (parts[i + 2] || "").trim();
+      if (text) out.push({ start: +parts[i] * 60 + +parts[i + 1], text });
+    }
+  }
+  return out.length ? out : null;
+}
+
+export function prep(url, dir, { useSubs = false } = {}) {
+  requireYtDlp();
+  mkdirSync(dir, { recursive: true });
+
+  const infoPath = join(dir, "info.json");
+  // La cartella prende il nome dall'id del video, ma un id non riconosciuto la
+  // fa ricadere su un nome generico condiviso: senza questo controllo si
+  // analizzerebbe il video della corsa precedente, in silenzio.
+  let info = null;
+  if (existsSync(infoPath)) {
+    try {
+      const cached = JSON.parse(readFileSync(infoPath, "utf8"));
+      if (cached?.id && url.includes(cached.id)) info = cached;
+      else note(SKILL, `${infoPath} è di un altro video: lo riscarico.`);
+    } catch { /* riscarico */ }
+  }
+  if (!info) {
+    const r = spawnSync("yt-dlp", ["--skip-download", "--no-warnings", "-J", url], {
+      encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
+    });
+    if (r.status !== 0 || !r.stdout.trim()) {
+      die(`yt-dlp non riesce a leggere ${url}:\n${(r.stderr || "").slice(-400)}`);
+    }
+    writeFileSync(infoPath, r.stdout);
+    info = JSON.parse(r.stdout);
+  }
+
+  const transcriptPath = join(dir, "transcript.txt");
+  let blocks;
+  if (existsSync(transcriptPath)) {
+    blocks = readFileSync(transcriptPath, "utf8").split("\n").filter(Boolean).map(l => {
+      const m = /^\[(\d+)\]\s*(.*)$/.exec(l);
+      return { start: +m[1], text: m[2] };
+    });
+  } else if (!useSubs && (blocks = transcribeAudio(dir, url))) {
+    writeFileSync(transcriptPath, blocks.map(b => `[${b.start}] ${b.text}`).join("\n") + "\n");
+  } else {
+    const track = pickSubtitleTrack(info);
+    if (!track) {
+      die(`nessun sottotitolo disponibile per ${url}.\n`
+        + `Senza trascrizione non si possono ricavare i capitoli: usa go-listen sull'audio, `
+        + `oppure la modalità diretta di go-watch se il video è corto.`);
+    }
+    const subDir = join(dir, "subs");
+    mkdirSync(subDir, { recursive: true });
+    const r = spawnSync("yt-dlp", [
+      "--skip-download", "--no-warnings",
+      track.kind === "manuali" ? "--write-subs" : "--write-auto-subs",
+      "--sub-langs", track.lang, "--sub-format", "vtt",
+      "-o", join(subDir, "s"), url,
+    ], { encoding: "utf8" });
+    const vtts = readdirSync(subDir).filter(f => f.endsWith(".vtt"));
+    // Distinguere "non ci sono" da "non sono riuscito a prenderli": senza questo
+    // un errore di rete manda a cercare una trascrizione che invece esiste.
+    if (!vtts.length) {
+      rmSync(subDir, { recursive: true, force: true });
+      die(`yt-dlp non ha scaricato la traccia ${track.lang} (${track.kind}), che info.json dà per esistente`
+        + `${r.status !== 0 ? ` — uscito con stato ${r.status}` : ""}:\n${(r.stderr || "").slice(-400)}`);
+    }
+    note(SKILL, `sottotitoli: ${track.lang} (${track.kind})`);
+    blocks = vttToBlocks(readFileSync(join(subDir, vtts[0]), "utf8"));
+    writeFileSync(transcriptPath, blocks.map(b => `[${b.start}] ${b.text}`).join("\n") + "\n");
+    rmSync(subDir, { recursive: true, force: true });
+  }
+
+  // Capitoli dell'autore, se li ha messi: una base di partenza, non un risultato.
+  // Li ha scritti sapendo com'è strutturato il video, ma anche per farsi trovare
+  // nella barra del player — capitoli promozionali e blocchi da un quarto d'ora
+  // vanno comunque verificati, divisi o fusi.
+  const authored = (info.chapters || []).map(c => ({
+    start: Math.round(c.start_time), end: Math.round(c.end_time), title: c.title,
+  }));
+  if (authored.length) writeFileSync(join(dir, "chapters-authored.json"), JSON.stringify(authored, null, 2));
+
+  const words = blocks.reduce((n, b) => n + b.text.split(/\s+/).length, 0);
+  return { info, blocks, words, authored, dir, transcriptPath };
+}
+
+export function report(r) {
+  const { info, words, authored, dir, transcriptPath, blocks } = r;
+  const lines = [
+    `titolo:      ${info.title}`,
+    `canale:      ${info.uploader}`,
+    `durata:      ${mmss(info.duration)} (${info.duration}s)`,
+    `trascrizione: ${transcriptPath} — ${blocks.length} blocchi, ${words} parole, ~${Math.round(words * 1.4)} token`,
+    `descrizione: ${(info.description || "").length} caratteri in info.json`,
+    "",
+  ];
+  if (authored.length) {
+    lines.push(`capitoli dell'autore: ${authored.length} — ${join(dir, "chapters-authored.json")}`);
+    for (const c of authored) lines.push(`  ${mmss(c.start)}–${mmss(c.end)}  ${c.title}`);
+    lines.push("", "Prendi questi, aggiungi i campi visual/skippable e salva come chapters.json.");
+  } else {
+    lines.push("capitoli dell'autore: NESSUNO.", "",
+      "Ricavali tu dalla trascrizione e salva chapters.json in questa cartella.");
+  }
+  return lines.join("\n") + "\n";
+}
+
+// Uso diretto: node prep.mjs <url> [dir]
+if (import.meta.url === `file://${process.argv[1]}`) {
+  const url = process.argv[2];
+  if (!url) die("uso: prep.mjs <url-youtube> [cartella] [--subs]");
+  // I live archiviati e gli shorts hanno URL diversi da /watch?v=, e sono
+  // esattamente i video lunghi che si vogliono leggere invece di guardare:
+  // senza queste forme finivano tutti nella stessa cartella "go-watch-video".
+  const id = (url.match(/[?&]v=([\w-]{11})/)
+    || url.match(/(?:youtu\.be|\/shorts|\/live|\/embed|\/v)\/([\w-]{11})/) || [])[1] || "video";
+  const dir = process.argv[3] || `/tmp/go-watch-${id}`;
+  const r = prep(url, dir, { useSubs: process.argv.includes("--subs") });
+  note(SKILL, `cartella di lavoro: ${dir}`);
+  process.stdout.write(report(r));
+}

@@ -21,6 +21,7 @@ senza capire quale meccanismo serve.
 skills/
   bananao/
     SKILL.md            # frontmatter name + description, poi uso
+    NOTES.md            # misure, schemi API, decisioni: solo se ci metti le mani
     generate-image.mjs  # CLI eseguibile, zero dipendenze
 ```
 
@@ -34,86 +35,56 @@ skills/
 - Risultato utile su **stdout**, diagnostica su **stderr**, così l'output è catturabile con `$(...)`.
 - Nessuna credenziale nella repo: **è pubblica**. Le chiavi vivono in `~/.config/<skill>/`, chmod 600.
 
+## Dove va cosa
+
+Tre file, tre lettori diversi. Sbagliare posto significa o non essere letti, o far pagare a
+ogni sessione qualcosa che serviva a una sola.
+
+| File | Chi lo legge | Cosa ci va |
+|---|---|---|
+| `SKILL.md` | l'agente che **usa** la skill | come si invoca, opzioni, errori, limiti operativi |
+| `skills/<nome>/NOTES.md` | chi **modifica** la skill | misure, schemi delle API, confronti tra modelli, cosa non è mai stato provato |
+| questo `CLAUDE.md` | **ogni** sessione aperta nella repo | solo le trappole: le cose che si sbaglierebbero senza saperlo, in poche righe |
+
+Questo file viene caricato in ogni sessione, anche quando la skill in questione non c'entra
+niente. Se una cosa serve solo a chi sta lavorando su quella skill, va in `NOTES.md`.
+
 ---
 
-# bananao
+# Trappole per skill
 
-Genera immagini via OpenRouter. `SKILL.md` copre l'uso; qui sotto c'è solo ciò che non si deduce
-leggendo il codice.
+Poche righe ciascuna, con il rimando. Se ti serve il perché, è in `NOTES.md`.
 
-## L'API è quella dedicata, non chat/completions
+## bananao — `skills/bananao/NOTES.md`
 
-**Non riportare lo script su `POST /chat/completions` con `modalities` e `image_config`.**
-Quella forma gira in molte guide ed è la prima cosa che viene in mente, ma non è quella in uso qui.
+- **L'API è `POST /api/v1/images/generations`, non `chat/completions`.** La forma con
+  `messages` + `modalities` gira in molte guide, è la prima che viene in mente ed è sbagliata.
+- **Nessun fallback su `OPENROUTER_API_KEY`.** È deliberato: chiave dedicata = spesa
+  tracciabile e revoca chirurgica.
+- Il test end-to-end non è mai stato eseguito.
 
-Verificato empiricamente contro l'API live (28 luglio 2026):
+## go-watch — `skills/go-watch/NOTES.md`
 
-| Forma vecchia (NON usare) | Forma attuale |
-|---|---|
-| `POST /api/v1/chat/completions` | `POST /api/v1/images/generations` |
-| `messages: [...]` + `modalities: ["image","text"]` | `prompt` (string, richiesto) |
-| `image_config.image_size` | `resolution` top-level: `512\|1K\|2K\|4K` |
-| `image_config.aspect_ratio` | `aspect_ratio` top-level |
-| `choices[0].message.images[0].image_url.url` (data URL) | `data[0].b64_json` + `data[0].media_type` |
-| immagine di input come `image_url` nel content | `input_references[]`, max 14 |
-
-`POST /api/v1/images/generations` con body `{}` risponde 400 con un ZodError che elenca i campi
-richiesti: è il modo più veloce per ri-verificare lo schema se qualcosa smette di funzionare.
-
-I parametri ammessi **cambiano da modello a modello** e sono leggibili a runtime:
-
-```bash
-curl -s https://openrouter.ai/api/v1/images/models \
-  | jq '.data[] | select(.id=="google/gemini-3.1-flash-image") | .supported_parameters'
-```
-
-Es. `gemini-3.1-flash-lite-image` accetta **solo** `resolution: "1K"`, e tutti i modelli Google
-attuali hanno `n` con max 1 — per questo non esiste un flag `--n`.
-
-## Decisioni prese, con il perché
-
-**Chiave solo da file, nessun fallback su variabile d'ambiente.** Scelta deliberata, non una
-dimenticanza. Un fallback su `OPENROUTER_API_KEY` generica vanificherebbe lo scopo: la chiave è
-dedicata a questa skill così che la spesa sia tracciabile sulla dashboard OpenRouter e la revoca sia
-chirurgica. Se in futuro serve un override per CI, usare un nome dedicato (`BANANAO_OPENROUTER_KEY`),
-mai quello generico.
-
-**La chiave sta in `~/.config/bananao/config.json`, non nella cartella della skill.** Due motivi:
-la cartella della skill è distribuibile e versionata (pubblica!), e un aggiornamento della repo
-sovrascriverebbe il file.
-
-**Default `google/gemini-3.1-flash-image`** (~$0.06/img). Il `2.5-flash-image` che gira in molte
-guide come "Nano Banana" è di ottobre 2025 ed è superato. Il `lite` (~$0.03) è il fallback per asset
-usa-e-getta, il `3-pro` (~$0.12) per quando la qualità conta.
-
-**Lo script non chiede mai nulla in modo interattivo.** Se la chiave manca esce con codice 1 e
-stampa il comando esatto da eseguire. Un prompt interattivo bloccherebbe l'agente che lo invoca.
-
-## Buco noto nella protezione della chiave
-
-In `~/.claude/settings.json` c'è:
-
-```json
-"permissions": { "deny": ["Read(~/.config/bananao/**)"] }
-```
-
-**Questo blocca solo il tool Read.** Un `cat ~/.config/bananao/config.json` via Bash passa.
-Non tentare di chiuderlo aggiungendo deny su Bash: è whack-a-mole (`cat`, `grep`, `head`, `node -e`,
-`python -c`…). Il meccanismo giusto è:
-
-```json
-"sandbox": { "credentials": { "files": [{ "path": "~/.config/bananao", "mode": "deny" }] } }
-```
-
-che però vale solo per i comandi sandboxati. Non ancora applicato — decisione aperta.
-
-## TODO aperti
-
-- [ ] **Test end-to-end mai eseguito.** Endpoint, schema di richiesta e parametri sono verificati
-      contro l'API live; i path di errore del CLI sono esercitati (chiave assente, opzioni
-      malformate, stdout vuoto su fallimento). Ma nessuna immagine è mai stata davvero generata,
-      perché serve la chiave. Primo comando da lanciare:
-      ```bash
-      node ~/.claude/skills/bananao/generate-image.mjs "un pappagallo origami su fondo blu" -a 1:1 -s 1K -o /tmp/test-bananao.png
-      ```
-- [ ] Decidere se aggiungere `sandbox.credentials.files` (vedi sopra).
+- **Gli offset non passano da OpenRouter.** `video_metadata` viene scartato in silenzio, in
+  tutte le posizioni: stessi token identici, nessun errore. Per guardare un capitolo senza
+  pagare il video intero serve l'API Google diretta; il ripiego su OpenRouter esiste, ma
+  deve ritagliare il segmento con yt-dlp e costa ~3×. `media_resolution` invece passa — non
+  generalizzare da quello.
+- **Il testo piccolo a schermo viene letto male, da tutti i modelli provati.** Versioni e URL
+  escono verosimili ma sbagliati (`0.4.3` e `49.2` dove il fotogramma dice `1.49.2`).
+  `MEDIA_RESOLUTION_HIGH` non aiuta: sull'URL YouTube viene ignorato, token identici. Se un
+  numero conta, si verifica sul fotogramma.
+- **Per i capitoli con testo a schermo serve un flash, non il lite.** A parità esatta di
+  token in ingresso il lite parafrasa dove flash riporta.
+- **Segmentare e scrivere restano al modello host.** Non delegarli a uno script o a un
+  modello economico: sono ~12k token di testo, già coperti dall'abbonamento, e il lite li fa
+  peggio (sulla segmentazione ha lasciato un blocco indivisibile da dieci minuti). A Gemini
+  si paga solo ciò che nessun altro può fare, cioè guardare. Questo non vieta un wrapper che
+  orchestri i passi meccanicamente: vieta di spostare il giudizio.
+- **Il targeting per capitoli non è un'ottimizzazione di costo, è correttezza.** La passata
+  unica su un video da 10 minuti ha risposto che un argomento non veniva mai trattato,
+  mentre aveva un capitolo dedicato.
+- **Su OpenRouter gli alias `-latest` non esistono.** `google/gemini-flash-latest` risponde
+  HTTP 400 anche se una lettura veloce del catalogo lo lascia credere: lì i modelli sono
+  versionati (`google/gemini-3.6-flash`). E il ripiego ritaglia il segmento, che riparte da
+  00:00: i timestamp vanno riportati al video intero dicendolo nel prompt.

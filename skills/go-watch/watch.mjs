@@ -4,7 +4,9 @@
 
 import { existsSync, statSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { resolve, join, extname, basename } from "node:path";
+import { resolve, join, extname, basename, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
+import { spawnSync } from "node:child_process";
 import {
   DEFAULT_MODEL, VIDEO_MIME, MAX_UPLOAD_BYTES,
   CONTEXT_TOKENS, RESPONSE_HEADROOM,
@@ -15,6 +17,17 @@ import { requireFfmpeg, probe, hasAudioStream, maxVolumeDb, SILENCE_DB, runFfmpe
 
 const SKILL = "go-watch";
 const die = (msg) => fail(SKILL, msg);
+
+// Due modi, un solo comando. Il modo diretto (sotto) è una chiamata sola su
+// tutto il video: va bene finché il video è corto. Il modo ad articolo passa da
+// prep + extract e ha bisogno di un agente in mezzo, per i capitoli e la
+// sintesi: per quello i sottocomandi sono separati.
+const SUB = { prep: "prep.mjs", extract: "extract.mjs" };
+if (SUB[process.argv[2]]) {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const r = spawnSync(process.execPath, [join(here, SUB[process.argv[2]]), ...process.argv.slice(3)], { stdio: "inherit" });
+  process.exit(r.status ?? 1);
+}
 
 // Sopra questa soglia il file viene ricodificato prima di partire: il modello
 // campiona 1 fotogramma al secondo e non vede oltre i 1280px, quindi la

@@ -15,6 +15,11 @@ export const CONTEXT_TOKENS = 1_048_576;
 export const TOKENS_PER_FRAME = 258; // un fotogramma a risoluzione default
 export const TOKENS_PER_FRAME_LOW = 79; // con MEDIA_RESOLUTION_LOW
 export const TOKENS_PER_AUDIO_SECOND = 32; // --low non lo riduce
+// Un file video caricato su OpenRouter: 5.744 token per 60s di segmento 720p
+// con gemini-3.6-flash, cioè 66 (fotogramma a risoluzione bassa) + 32 (audio).
+// Non confondere con i 295 tok/s che costa passare a OpenRouter l'URL YouTube
+// intero: lì i modelli più vecchi campionano a risoluzione piena.
+export const TOKENS_PER_VIDEO_SECOND = 98;
 export const RESPONSE_HEADROOM = 16_384; // spazio lasciato a domanda e risposta
 
 // Un body oltre ~57 MB muore con un 502 di Cloudflare dopo 100 secondi.
@@ -40,13 +45,20 @@ export const VIDEO_MIME = {
 const SETUP = `Configura la chiave una volta sola (vale per tutta la famiglia go-*).
 
 1. Crea una chiave dedicata su https://openrouter.ai/keys
-2. Esegui nel tuo terminale; la chiave viene chiesta con read -s,
-   così non resta né a video né nella history della shell:
+2. Esegui nel tuo terminale; la chiave viene chiesta senza eco, così non
+   resta né a video né nella history della shell. Il file viene aggiornato,
+   non sovrascritto: nel config convivono più chiavi (es. geminiKey).
 
   mkdir -p ~/.config/go-skills
-  read -s "?Incolla la chiave OpenRouter (sk-or-v1-...): " KEY && \\
-  printf '{"apiKey":"%s"}' "$KEY" > ~/.config/go-skills/config.json && \\
-  chmod 600 ~/.config/go-skills/config.json && unset KEY && echo " -> chiave salvata"
+  python3 - <<'EOF'
+  import json, os, getpass
+  p = os.path.expanduser("~/.config/go-skills/config.json")
+  d = json.load(open(p)) if os.path.exists(p) else {}
+  d["apiKey"] = getpass.getpass("Incolla la chiave OpenRouter (sk-or-v1-...): ")
+  json.dump(d, open(p, "w"))
+  os.chmod(p, 0o600)
+  print("-> chiave salvata")
+  EOF
 `;
 
 export function fail(skill, msg) {
