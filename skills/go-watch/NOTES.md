@@ -207,8 +207,40 @@ OpenRouter: quello è un altro percorso, con modelli più vecchi a risoluzione p
 Il limite vero del ripiego non sono i token ma l'upload: **4,8 MB per minuto** a 720p, quindi
 i 40 MB si sfondano intorno agli otto minuti. C'è una guardia che lo dice prima di scaricare.
 
+## OpenAI per la trascrizione: provato, scartato
+
+Stesso `audio.m4a` (Homebrew, 10:17, un parlante), tre motori, l'11 agosto 2026.
+
+| | marcatori | parlanti | tempo | costo | nomi propri |
+|---|---|---|---|---|---|
+| `gemini-3.6-flash` | sì, a richiesta | sì, a richiesta | 36s | $0,041 | 5 su 7 |
+| `gpt-4o-transcribe-diarize` | per segmento | automatici | 298s | $0,206 | 2 su 7 |
+| `gpt-transcribe` | **no** | no | 20s | $0,046 | 5 su 7 |
+
+`gpt-transcribe` è il modello nuovo del 28 luglio e trascrive benissimo, ma **non produce
+marcatori temporali**: `response_format` accetta solo `json` o `text`, e `verbose_json`
+risponde `not compatible with model 'gpt-transcribe-api-ev3'`. Senza istanti non si taglia
+per capitoli, quindi è fuori. L'unico modello OpenAI con i tempi è `gpt-4o-transcribe-diarize`
+(che richiede anche `chunking_strategy`, altrimenti HTTP 400): otto volte più lento, cinque
+volte più caro, e il peggiore dei tre sui nomi.
+
+Le due trascrizioni con i tempi divergono sul **4,1% delle parole** (62 su 1.513), quasi tutte
+nomi propri. Verificate contro la lista che l'autore pubblica nella descrizione del video:
+Gemini prende Spotify, Itsycal, NeoHtop, Maccy, AltTab e sbaglia CaskHub, che chiama
+"Caskcube" cinque volte senza mai esitare. Nessun motore segnala mai il dubbio — `diarize`
+si contraddice da solo (KastHub, poi Cask Hub) senza accorgersene. **Se un nome conta, la
+trascrizione da sola non basta.**
+
+Differenza sistematica, non rumore: il narratore è britannico e OpenAI ne rispetta
+l'ortografia (*catalogue*, *notarisation*) mentre Gemini americanizza e formatta — apici
+inversi intorno ai comandi, composti uniti. Verbatim in senso stretto è più OpenAI.
+
 ## Non ancora provato
 
+- **Whisper in locale.** Restano non misurati i modelli aperti che hanno superato Whisper
+  (Parakeet TDT 0.6B v3, Cohere Transcribe 2B, Nemotron 3.5 ASR): girano su CPU e costano
+  zero. Danno i tempi, non la diarizzazione. Non sono stati provati perché a 4 centesimi per
+  dieci minuti Gemini non è il collo di bottiglia.
 - **Video non YouTube.** `prep.mjs` dipende da yt-dlp per metadati e sottotitoli. Per un
   file locale servirebbe go-listen per la trascrizione, e il passo dei capitoli andrebbe
   ripensato.
