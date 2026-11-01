@@ -16,6 +16,7 @@ symlink in `~/.claude/skills/`. Non è un marketplace di plugin — per quello v
 | [`go-scrub`](skills/go-scrub/) | Misura le animazioni di UI fotogramma per fotogramma, in millisecondi reali |
 | [`go-listen`](skills/go-listen/) | Trascrive e diarizza l'audio, anche estratto da un video |
 | [`report-open`](skills/report-open/) | Apre un documento in un reader desktop e ne posiziona la finestra (macOS) |
+| [`go-render-3d`](skills/go-render-3d/) | Renderizza un modello 3D in PNG con F3D, sempre nello stesso set |
 
 La famiglia `go-*` dà a Claude occhi e orecchie economici: un modello a basso costo via OpenRouter
 guarda o ascolta il media e restituisce testo, Claude ragiona solo sul testo. Il media non entra mai
@@ -51,6 +52,8 @@ perché Node risolve gli import al percorso reale. `_lib/` non va symlinkata: no
   (`brew install ffmpeg`). Servono per comprimere, rallentare, estrarre l'audio e rilevare le
   tracce mute. È una deroga consapevole alla regola zero-dipendenze: senza ffmpeg queste skill
   non funzionano sui file che le persone hanno davvero.
+- **f3d nel PATH** per `go-render-3d` (`brew install f3d`). È il motore di render: lo script
+  si limita a richiamarlo con il set fisso.
 
 ## Chiavi e sicurezza
 

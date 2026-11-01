@@ -1,0 +1,91 @@
+#!/usr/bin/env bash
+# Renderizza un modello 3D in PNG con F3D, sempre nello stesso set
+# (luci, risoluzione e camera fissati in set.json accanto a questo script).
+#
+#   render-3d <modello> [-o out.png] [-b sfondo] [-v vista] [-u asse]
+#
+#   -o  PNG di uscita          (default: accanto al modello, <nome>.png)
+#   -b  white | gray | black | transparent | #RRGGBB   (default: white)
+#   -v  iso | front | side | top | all                 (default: iso)
+#   -u  asse del modello che va in alto: +X -X +Y -Y +Z -Z   (default: +Z)
+#
+# Con più viste il nome della vista va prima di .png: <nome>-front.png.
+# Stampa su stdout i percorsi dei PNG scritti, uno per riga.
+set -euo pipefail
+
+usage() { echo "uso: render-3d <modello> [-o out.png] [-b sfondo] [-v vista] [-u asse]" >&2; exit 2; }
+
+[ $# -ge 1 ] || usage
+model="$1"; shift
+[ -f "$model" ] || { echo "render-3d: file non trovato: $model" >&2; exit 1; }
+
+out="" bg="white" view="iso" up="+Z"
+while getopts "o:b:v:u:" opt; do
+  case "$opt" in
+    o) out="$OPTARG" ;;
+    b) bg="$OPTARG" ;;
+    v) view="$OPTARG" ;;
+    u) up="$OPTARG" ;;
+    *) usage ;;
+  esac
+done
+
+command -v f3d >/dev/null || { echo "render-3d: f3d non trovato nel PATH (brew install f3d)." >&2; exit 1; }
+
+# readlink -f segue il symlink da ~/.claude/skills fino alla repo.
+here="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+config="$here/set.json"
+
+case "$bg" in
+  white)       bg_args=(--background-color=1,1,1) ;;
+  gray)        bg_args=(--background-color=0.5,0.5,0.5) ;;
+  black)       bg_args=(--background-color=0,0,0) ;;
+  transparent) bg_args=(--no-background) ;;
+  \#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+    hex="${bg#\#}"
+    bg_args=("--background-color=$(printf '%d %d %d' "0x${hex:0:2}" "0x${hex:2:2}" "0x${hex:4:2}" \
+      | awk '{printf "%.4f,%.4f,%.4f", $1/255, $2/255, $3/255}')") ;;
+  *) echo "render-3d: sfondo non valido: $bg (white|gray|black|transparent|#RRGGBB)" >&2; exit 2 ;;
+esac
+
+# Il file dà l'orientamento di stampa o del CAD, non quello d'uso: l'asse che va in alto
+# lo sceglie chi renderizza. Per ogni asse: U = alto, F = dove guarda la camera frontale,
+# S = dove guarda quella laterale (S = -(F × U), così le viste non escono specchiate).
+case "$up" in
+  +Z) U=0,0,1  F=0,1,0  S=-1,0,0 ;;
+  -Z) U=0,0,-1 F=0,1,0  S=1,0,0 ;;
+  +Y) U=0,1,0  F=0,0,-1 S=-1,0,0 ;;
+  -Y) U=0,-1,0 F=0,0,-1 S=1,0,0 ;;
+  +X) U=1,0,0  F=0,1,0  S=0,0,1 ;;
+  -X) U=-1,0,0 F=0,1,0  S=0,0,-1 ;;
+  *) echo "render-3d: asse non valido: $up (+X|-X|+Y|-Y|+Z|-Z)" >&2; exit 2 ;;
+esac
+
+# Direzione = verso cui guarda la camera. La 3/4 guarda in avanti, di lato e in basso.
+camera_args() {
+  case "$1" in
+    iso)   echo "--camera-direction=$(awk -F, -v f="$F" -v s="$S" -v u="$U" 'BEGIN {
+             split(f, a); split(s, b); split(u, c)
+             printf "%d,%d,%d", a[1]+b[1]-c[1], a[2]+b[2]-c[2], a[3]+b[3]-c[3] }')" ;;
+    front) echo "--camera-direction=$F" ;;
+    side)  echo "--camera-direction=$S" ;;
+    top)   echo "--camera-direction=$(awk -v u="$U" 'BEGIN { split(u, c, ","); printf "%d,%d,%d", -c[1], -c[2], -c[3] }') --camera-view-up=$F" ;;
+  esac
+}
+
+case "$view" in
+  iso|front|side|top) views=("$view") ;;
+  all) views=(iso front side top) ;;
+  *) echo "render-3d: vista non valida: $view (iso|front|side|top|all)" >&2; exit 2 ;;
+esac
+
+base="${out:-${model%.*}.png}"
+for v in "${views[@]}"; do
+  if [ ${#views[@]} -gt 1 ]; then dest="${base%.png}-$v.png"; else dest="$base"; fi
+  rm -f "$dest"
+  # shellcheck disable=SC2046  # camera_args va spezzato in più opzioni
+  f3d "$model" --config="$config" --output="$dest" --up="$up" "${bg_args[@]}" $(camera_args "$v") >&2
+  # f3d esce con 0 anche quando non riesce a caricare il modello: conta solo il file.
+  [ -f "$dest" ] || { echo "render-3d: nessun PNG scritto per $model (vista $v)." >&2; exit 1; }
+  echo "$dest"
+done

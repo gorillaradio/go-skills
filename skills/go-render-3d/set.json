@@ -1,0 +1,9 @@
+[
+  {
+    "options": {
+      "resolution": "2048,2048",
+      "anti-aliasing": "ssaa",
+      "ambient-occlusion": true
+    }
+  }
+]
