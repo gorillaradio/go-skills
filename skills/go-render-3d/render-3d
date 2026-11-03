@@ -6,7 +6,7 @@
 #
 #   -o  PNG di uscita          (default: accanto al modello, <nome>.png)
 #   -b  white | gray | black | transparent | #RRGGBB   (default: white)
-#   -v  iso | front | side | top | all                 (default: iso)
+#   -v  iso | isometric | front | side | top | all     (default: iso)
 #   -u  asse del modello che va in alto: +X -X +Y -Y +Z -Z   (default: +Z)
 #
 # Con più viste il nome della vista va prima di .png: <nome>-front.png.
@@ -67,6 +67,7 @@ camera_args() {
     iso)   echo "--camera-direction=$(awk -F, -v f="$F" -v s="$S" -v u="$U" 'BEGIN {
              split(f, a); split(s, b); split(u, c)
              printf "%d,%d,%d", a[1]+b[1]-c[1], a[2]+b[2]-c[2], a[3]+b[3]-c[3] }')" ;;
+    isometric) echo "$(camera_args iso) --camera-orthographic" ;;
     front) echo "--camera-direction=$F" ;;
     side)  echo "--camera-direction=$S" ;;
     top)   echo "--camera-direction=$(awk -v u="$U" 'BEGIN { split(u, c, ","); printf "%d,%d,%d", -c[1], -c[2], -c[3] }') --camera-view-up=$F" ;;
@@ -74,9 +75,9 @@ camera_args() {
 }
 
 case "$view" in
-  iso|front|side|top) views=("$view") ;;
+  iso|isometric|front|side|top) views=("$view") ;;
   all) views=(iso front side top) ;;
-  *) echo "render-3d: vista non valida: $view (iso|front|side|top|all)" >&2; exit 2 ;;
+  *) echo "render-3d: vista non valida: $view (iso|isometric|front|side|top|all)" >&2; exit 2 ;;
 esac
 
 base="${out:-${model%.*}.png}"

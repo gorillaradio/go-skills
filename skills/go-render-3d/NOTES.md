@@ -73,6 +73,32 @@ Per una centratura esatta bisognerebbe ritagliare il PNG dopo il render, per ese
 ImageMagick (`-trim` più un bordo fisso). Non è stato fatto perché aggiungerebbe una
 dipendenza.
 
+## La vista `isometric`
+
+**`iso` e `isometric` guardano nella stessa direzione: cambia solo la proiezione.** La direzione
+F + S − U ha le tre componenti uguali, che è la definizione di assonometria isometrica. Alla
+vista `iso` manca solo la camera ortografica, quindi `isometric` è `iso` più
+`--camera-orthographic`. `iso` è rimasta in prospettiva e con lo stesso nome per non cambiare i
+render già fatti.
+
+**La prova è un cubo.** In isometria vera il contorno di un cubo è un esagono regolare: lati
+uguali e larghezza/altezza 0,866. Misurato sul PNG (3 novembre 2026, F3D 4.0.0):
+
+| Vista | Lati dell'esagono (px) | Larghezza/altezza |
+| --- | --- | --- |
+| `iso` | 853, 19, 1570, 1570, 19, 853 | 0,9413 |
+| `isometric` | 922, 923, 922, 922, 923, 922 | 0,8676 |
+
+Stessi numeri con `-u -Y`. Il render resta deterministico, e `iso` è identica pixel per pixel a
+prima della modifica.
+
+**Lo zoom automatico funziona anche in ortografica.** Barra alta (20×20×300), piastra piatta
+(300×300×5), barra lunga (300×20×20) e cubo lontano dall'origine escono interi, con circa 100 px
+di margine su 2048. Sui pezzi veri è stato provato solo `manga-riser` di `hacked-salmon`
+(`montato.stl` e `riser.stl`), dove l'ambient occlusion non mostra difetti a vista.
+
+**`isometric` non è dentro `all`**, così `-v all` continua a scrivere gli stessi quattro file.
+
 ## Orientamento: l'opzione `-u`
 
 Un file 3D contiene l'orientamento in cui il pezzo si stampa o in cui è stato disegnato nel

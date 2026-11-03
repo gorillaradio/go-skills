@@ -19,11 +19,12 @@ images of different parts are consistent with each other.
 | --- | --- | --- |
 | `-o` | output PNG path | next to the model, `<name>.png` |
 | `-b` | `white`, `gray` (50%), `black`, `transparent`, `#RRGGBB` | `white` |
-| `-v` | `iso` (3/4 from front-right-above), `front`, `side`, `top`, `all` | `iso` |
+| `-v` | `iso` (3/4 from front-right-above, in perspective), `isometric` (same direction, true isometric axonometry: no perspective), `front`, `side`, `top`, `all` | `iso` |
 | `-u` | model axis that points up: `+X`, `-X`, `+Y`, `-Y`, `+Z`, `-Z` | `+Z` |
 
 With `-v all` it writes four files, the view name before `.png`:
 `<name>-iso.png`, `<name>-front.png`, `<name>-side.png`, `<name>-top.png`.
+`isometric` is not part of `all`: ask for it on its own.
 
 Prints the written paths on stdout, one per line; F3D's own output goes to
 stderr. Exits non-zero if no PNG was written.
