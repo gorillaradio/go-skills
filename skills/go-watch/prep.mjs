@@ -12,15 +12,18 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { fail, note } from "../_lib/openrouter.mjs";
+import { loadGeminiKey, generate, videoPart, CONFIG } from "../_lib/google.mjs";
 
 const SKILL = "go-watch prep";
 const die = (msg) => fail(SKILL, msg);
 
-export function requireYtDlp() {
+export function hasYtDlp() {
   const r = spawnSync("yt-dlp", ["--version"], { stdio: "ignore" });
-  if (r.error || r.status !== 0) {
-    die("yt-dlp non trovato nel PATH. Installa con:\n\n  brew install yt-dlp");
-  }
+  return !r.error && r.status === 0;
+}
+
+export function requireYtDlp() {
+  if (!hasYtDlp()) die("yt-dlp non trovato nel PATH. Installa con:\n\n  brew install yt-dlp");
 }
 
 // Arrotondare prima di dividere, non dopo: con Math.round applicato ai soli
@@ -90,9 +93,10 @@ Se i parlanti sono più di uno etichettali (Parlante 1, Parlante 2, ...) in modo
 Se un passaggio è incomprensibile scrivi [incomprensibile], non inventare.
 Non riassumere e non commentare.`;
 
-function transcribeAudio(dir, url) {
+function transcribeAudio(dir, url, ytdlp) {
   const audio = join(dir, "audio.m4a");
   if (!existsSync(audio)) {
+    if (!ytdlp) return null;
     const r = spawnSync("yt-dlp", [
       "--no-warnings", "-x", "--audio-format", "m4a", "-o", audio, url,
     ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
@@ -109,11 +113,17 @@ function transcribeAudio(dir, url) {
     note(SKILL, "go-listen non ha prodotto una trascrizione, ripiego sui sottotitoli.");
     return null;
   }
-  // Da "[mm:ss] testo" ai blocchi "[secondi] testo" che usa il resto della
-  // pipeline. Il testo prima del primo marcatore, se c'è, parte da zero.
+  return parseTimestamped(r.stdout);
+}
+
+// Da "[mm:ss] testo" ai blocchi "[secondi] testo" che usa il resto della
+// pipeline. Accetta anche [h:mm:ss]: dopo la prima ora i modelli passano a
+// quella forma, e con il solo [mm:ss] tutto il resto collassava in un blocco.
+// Il testo prima del primo marcatore, se c'è, parte da zero.
+export function parseTimestamped(text) {
   const out = [];
-  for (const line of r.stdout.split("\n")) {
-    const parts = line.split(/\[(\d+):(\d\d)\]/);
+  for (const line of text.split("\n")) {
+    const parts = line.split(/\[(?:(\d+):)?(\d+):(\d\d)\]/);
     if (parts.length === 1) {
       const t = line.trim();
       if (t && out.length) out[out.length - 1].text += " " + t;
@@ -121,16 +131,86 @@ function transcribeAudio(dir, url) {
       continue;
     }
     if (parts[0].trim() && out.length) out[out.length - 1].text += " " + parts[0].trim();
-    for (let i = 1; i < parts.length; i += 3) {
-      const text = (parts[i + 2] || "").trim();
-      if (text) out.push({ start: +parts[i] * 60 + +parts[i + 1], text });
+    for (let i = 1; i < parts.length; i += 4) {
+      const t = (parts[i + 3] || "").trim();
+      const start = (+(parts[i] || 0)) * 3600 + +parts[i + 1] * 60 + +parts[i + 2];
+      if (t) out.push({ start, text: t });
     }
   }
   return out.length ? out : null;
 }
 
-export function prep(url, dir, { useSubs = false } = {}) {
-  requireYtDlp();
+// Senza yt-dlp (o con YouTube che lo blocca, come dagli IP dei datacenter):
+// Gemini scarica il video da sé dall'URL e ne trascrive l'audio. fps al minimo
+// perché qui serve solo l'audio: ~29 token al secondo, misurato. A pezzi da
+// 10 minuti, in parallelo, così nessuna risposta sfonda il tetto di output.
+// Gli offset funzionano e i marcatori escono già assoluti (verificato su 600s).
+const CHUNK_SECONDS = 600;
+async function transcribeViaGemini(url, duration, apiKey) {
+  const chunks = [];
+  for (let s = 0; s < duration; s += CHUNK_SECONDS) chunks.push([s, Math.min(s + CHUNK_SECONDS, duration)]);
+  note(SKILL, `trascrizione via Gemini dall'URL: ${chunks.length} pezzi da ${CHUNK_SECONDS / 60} min.`);
+  const prompt = (s) => `${TRANSCRIBE_PROMPT}
+Questo è il segmento che parte da ${mmss(s)}: i marcatori devono essere il tempo assoluto dall'inizio del video, non dall'inizio del segmento.`;
+  const results = await Promise.all(chunks.map(([s, e]) => generate(SKILL, {
+    apiKey, model: "gemini-flash-latest",
+    parts: [videoPart(url, { start: s, end: e, fps: 0.05 }), { text: prompt(s) }],
+  })));
+  const tokens = results.reduce((n, r) => n + r.promptTokens, 0);
+  note(SKILL, `trascrizione: ${tokens} token in ingresso.`);
+  return parseTimestamped(results.map(r => r.text).join("\n"));
+}
+
+// Metadati dalla YouTube Data API v3, quando yt-dlp non può. Chiave: il campo
+// "youtubeKey" del config, se c'è, altrimenti la geminiKey (stesso progetto
+// Google, basta attivarci la Data API). Restituisce la stessa forma di
+// info.json di yt-dlp, per i campi che il resto della pipeline usa.
+async function infoViaDataApi(id) {
+  let key = null;
+  try { key = JSON.parse(readFileSync(CONFIG, "utf8")).youtubeKey; } catch { /* sotto */ }
+  key = key || loadGeminiKey(SKILL);
+  if (!key) die(`yt-dlp non può leggere il video e manca una chiave Google per la YouTube Data API in ${CONFIG}.`);
+  const r = await fetch(`https://youtube.googleapis.com/youtube/v3/videos?part=snippet,contentDetails&id=${id}`, {
+    headers: { "x-goog-api-key": key },
+  });
+  const raw = await r.text();
+  if (!r.ok) {
+    let detail = raw.slice(0, 400);
+    try { detail = JSON.parse(raw)?.error?.message || detail; } catch { /* raw */ }
+    die(`YouTube Data API: HTTP ${r.status}\n${detail}\n\nServe la "YouTube Data API v3" attiva nel progetto della chiave, `
+      + `e la chiave non deve essere ristretta ad altre API.`);
+  }
+  const v = JSON.parse(raw).items?.[0];
+  if (!v) die(`la YouTube Data API non trova il video ${id} (privato o rimosso?).`);
+  const d = /^P(?:(\d+)D)?T?(?:(\d+)H)?(?:(\d+)M)?(?:(\d+)S)?$/.exec(v.contentDetails.duration) || [];
+  const duration = (+(d[1] || 0)) * 86400 + (+(d[2] || 0)) * 3600 + (+(d[3] || 0)) * 60 + (+(d[4] || 0));
+  const description = v.snippet.description || "";
+  return {
+    id, title: v.snippet.title, uploader: v.snippet.channelTitle, duration, description,
+    language: v.snippet.defaultAudioLanguage || v.snippet.defaultLanguage,
+    chapters: chaptersFromDescription(description, duration),
+    _source: "youtube-data-api",
+  };
+}
+
+// I capitoli dell'autore stanno nella descrizione: righe che iniziano con un
+// tempo, la prima a 0:00, almeno tre, in ordine (le stesse regole di YouTube).
+export function chaptersFromDescription(desc, duration) {
+  const rows = [];
+  for (const line of desc.split(/\r?\n/)) {
+    const m = /^\s*[([]?((?:\d+:)?\d{1,2}:\d{2})[)\]]?\s*[-–—:|]?\s*(.+?)\s*$/.exec(line);
+    if (!m) continue;
+    const t = m[1].split(":").reduce((a, x) => a * 60 + +x, 0);
+    if (rows.length && t <= rows[rows.length - 1].start) continue;
+    rows.push({ start: t, title: m[2] });
+  }
+  if (rows.length < 3 || rows[0].start !== 0) return [];
+  return rows.map((r, i) => ({ start_time: r.start, end_time: rows[i + 1]?.start ?? duration, title: r.title }));
+}
+
+export async function prep(url, dir, { useSubs = false, id } = {}) {
+  const ytdlp = hasYtDlp();
+  if (!ytdlp) note(SKILL, "yt-dlp non trovato: metadati dalla YouTube Data API, trascrizione da Gemini.");
   mkdirSync(dir, { recursive: true });
 
   const infoPath = join(dir, "info.json");
@@ -145,16 +225,29 @@ export function prep(url, dir, { useSubs = false } = {}) {
       else note(SKILL, `${infoPath} è di un altro video: lo riscarico.`);
     } catch { /* riscarico */ }
   }
-  if (!info) {
+  // yt-dlp bloccato (dagli IP dei datacenter YouTube chiede di dimostrare di
+  // non essere un bot) vale come yt-dlp assente: si passa all'API Google, e da
+  // lì in poi niente più richieste a YouTube che fallirebbero comunque.
+  let blocked = !ytdlp;
+  if (!info && ytdlp) {
     const r = spawnSync("yt-dlp", ["--skip-download", "--no-warnings", "-J", url], {
       encoding: "utf8", maxBuffer: 64 * 1024 * 1024,
     });
-    if (r.status !== 0 || !r.stdout.trim()) {
-      die(`yt-dlp non riesce a leggere ${url}:\n${(r.stderr || "").slice(-400)}`);
+    if (r.status === 0 && r.stdout.trim()) {
+      writeFileSync(infoPath, r.stdout);
+      info = JSON.parse(r.stdout);
+    } else {
+      if (!id) die(`yt-dlp non riesce a leggere ${url}:\n${(r.stderr || "").slice(-400)}`);
+      note(SKILL, `yt-dlp bloccato, passo alla YouTube Data API:\n${(r.stderr || "").trim().split("\n").pop().slice(0, 200)}`);
+      blocked = true;
     }
-    writeFileSync(infoPath, r.stdout);
-    info = JSON.parse(r.stdout);
   }
+  if (!info) {
+    if (!id) die(`senza yt-dlp servono link YouTube: non riconosco l'id in ${url}.`);
+    info = await infoViaDataApi(id);
+    writeFileSync(infoPath, JSON.stringify(info, null, 2));
+  }
+  if (info._source) blocked = true;
 
   const transcriptPath = join(dir, "transcript.txt");
   let blocks;
@@ -163,7 +256,12 @@ export function prep(url, dir, { useSubs = false } = {}) {
       const m = /^\[(\d+)\]\s*(.*)$/.exec(l);
       return { start: +m[1], text: m[2] };
     });
-  } else if (!useSubs && (blocks = transcribeAudio(dir, url))) {
+  } else if (!useSubs && (blocks = transcribeAudio(dir, url, !blocked))) {
+    writeFileSync(transcriptPath, blocks.map(b => `[${b.start}] ${b.text}`).join("\n") + "\n");
+  } else if (blocked) {
+    const key = loadGeminiKey(SKILL, { required: true });
+    blocks = await transcribeViaGemini(url, info.duration, key);
+    if (!blocks) die("Gemini non ha prodotto una trascrizione.");
     writeFileSync(transcriptPath, blocks.map(b => `[${b.start}] ${b.text}`).join("\n") + "\n");
   } else {
     const track = pickSubtitleTrack(info);
@@ -237,8 +335,8 @@ if (import.meta.url === `file://${process.argv[1]}`) {
   // senza queste forme finivano tutti nella stessa cartella "go-watch-video".
   const id = (url.match(/[?&]v=([\w-]{11})/)
     || url.match(/(?:youtu\.be|\/shorts|\/live|\/embed|\/v)\/([\w-]{11})/) || [])[1] || "video";
-  const dir = process.argv[3] || `/tmp/go-watch-${id}`;
-  const r = prep(url, dir, { useSubs: process.argv.includes("--subs") });
+  const dir = (process.argv[3] && !process.argv[3].startsWith("--") && process.argv[3]) || `/tmp/go-watch-${id}`;
+  const r = await prep(url, dir, { useSubs: process.argv.includes("--subs"), id: id === "video" ? null : id });
   note(SKILL, `cartella di lavoro: ${dir}`);
   process.stdout.write(report(r));
 }

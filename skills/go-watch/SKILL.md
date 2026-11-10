@@ -79,6 +79,13 @@ centesimo all'ora e in cambio ha punteggiatura, termini tecnici giusti e parlant
 Con `--subs` si torna ai sottotitoli, che sono gratis ma peggiori; è anche il ripiego
 automatico se l'audio non si scarica.
 
+**Senza yt-dlp, o con YouTube che lo blocca** (dagli IP dei datacenter, cioè negli ambienti
+cloud, chiede subito *"Sign in to confirm you're not a bot"*), `prep` non si ferma: prende
+titolo, durata e capitoli dalla YouTube Data API v3 e fa trascrivere l'audio a Gemini
+direttamente dall'URL, a pezzi da 10 minuti (~29 token/s, ~105k token l'ora). La Data API
+usa il campo `youtubeKey` del config, o in mancanza la `geminiKey`: nel progetto Google
+della chiave dev'essere attiva la "YouTube Data API v3". Il resto della pipeline non cambia.
+
 **Tutto quello che scarica resta nella cartella e viene riusato.** Non è per la velocità: a
 forza di rilanci YouTube risponde `429`, poi *"Sign in to confirm you're not a bot"*, e la
 pipeline si ferma al primo passo. Se devi rifare delle prove sullo stesso video, lavora sui
