@@ -82,7 +82,7 @@ automatico se l'audio non si scarica.
 **Senza yt-dlp, o con YouTube che lo blocca** (dagli IP dei datacenter, cioè negli ambienti
 cloud, chiede subito *"Sign in to confirm you're not a bot"*), `prep` non si ferma: prende
 titolo, durata e capitoli dalla YouTube Data API v3 e fa trascrivere l'audio a Gemini
-direttamente dall'URL, a pezzi da 10 minuti (~29 token/s, ~105k token l'ora). La Data API
+direttamente dall'URL, a pezzi da 5 minuti (~29 token/s, ~105k token l'ora; se rifiuta un tratto per RECITATION lo spezza, e quello che resta scoperto è segnato nella trascrizione). La Data API
 usa il campo `youtubeKey` del config, o in mancanza la `geminiKey`: nel progetto Google
 della chiave dev'essere attiva la "YouTube Data API v3". Il resto della pipeline non cambia.
 

@@ -12,7 +12,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { fail, note } from "../_lib/openrouter.mjs";
-import { loadGeminiKey, generate, videoPart, CONFIG } from "../_lib/google.mjs";
+import { loadGeminiKey, videoPart, CONFIG, API_BASE } from "../_lib/google.mjs";
 
 const SKILL = "go-watch prep";
 const die = (msg) => fail(SKILL, msg);
@@ -101,7 +101,7 @@ function transcribeAudio(dir, url, ytdlp) {
       "--no-warnings", "-x", "--audio-format", "m4a", "-o", audio, url,
     ], { encoding: "utf8", maxBuffer: 16 * 1024 * 1024 });
     if (r.status !== 0 || !existsSync(audio)) {
-      note(SKILL, `yt-dlp non riesce a scaricare l'audio, ripiego sui sottotitoli:\n${(r.stderr || "").slice(-300)}`);
+      note(SKILL, `yt-dlp non riesce a scaricare l'audio:\n${(r.stderr || "").slice(-300)}`);
       return null;
     }
   }
@@ -142,23 +142,71 @@ export function parseTimestamped(text) {
 
 // Senza yt-dlp (o con YouTube che lo blocca, come dagli IP dei datacenter):
 // Gemini scarica il video da sé dall'URL e ne trascrive l'audio. fps al minimo
-// perché qui serve solo l'audio: ~29 token al secondo, misurato. A pezzi da
-// 10 minuti, in parallelo, così nessuna risposta sfonda il tetto di output.
-// Gli offset funzionano e i marcatori escono già assoluti (verificato su 600s).
-const CHUNK_SECONDS = 600;
+// perché qui serve solo l'audio: ~29 token al secondo, misurato. Gli offset
+// funzionano e i marcatori escono già assoluti (verificato su 600s).
+//
+// Il nemico è RECITATION: su contenuti protetti Gemini a volte si rifiuta di
+// trascrivere verbatim e torna vuoto. È intermittente e dipende dalla
+// lunghezza: lo stesso pezzo da 5 minuti passa, quello da 10 no. Quindi pezzi
+// da 5 minuti, un ritentativo a temperatura alta, poi il pezzo si spezza in due
+// fino a 1 minuto. Quello che resta scoperto viene segnato, non inventato.
+const CHUNK_SECONDS = 300;
+const MIN_CHUNK = 60;
+
+async function transcribeOnce(url, s, e, apiKey, temperature) {
+  const text = `${TRANSCRIBE_PROMPT}
+Questo è il segmento che parte da ${mmss(s)}: i marcatori devono essere il tempo assoluto dall'inizio del video, non dall'inizio del segmento.`;
+  const body = { contents: [{ parts: [videoPart(url, { start: s, end: e, fps: 0.05 }), { text }] }] };
+  if (temperature !== undefined) body.generationConfig = { temperature };
+  let r;
+  try {
+    r = await fetch(`${API_BASE}/gemini-flash-latest:generateContent`, {
+      method: "POST",
+      headers: { "x-goog-api-key": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify(body), signal: AbortSignal.timeout(600_000),
+    });
+  } catch (err) { return { reason: err?.message || String(err) }; }
+  const raw = await r.text();
+  if (!r.ok) {
+    let detail = raw.slice(0, 300);
+    try { detail = JSON.parse(raw)?.error?.message || detail; } catch { /* raw */ }
+    if (r.status >= 500) return { reason: `HTTP ${r.status}` };
+    die(`API Google: HTTP ${r.status}\n${detail}`);
+  }
+  const j = JSON.parse(raw);
+  const c = j.candidates?.[0];
+  const out = (c?.content?.parts || []).map(x => x.text || "").join("");
+  const tokens = j.usageMetadata?.promptTokenCount ?? 0;
+  if (c?.finishReason === "STOP" && out.trim()) return { text: out, tokens };
+  return { reason: c?.finishReason || j.promptFeedback?.blockReason || "vuota", tokens };
+}
+
+async function transcribeRange(url, s, e, apiKey, stats) {
+  for (const temperature of [undefined, 1.0]) {
+    const r = await transcribeOnce(url, s, e, apiKey, temperature);
+    stats.tokens += r.tokens || 0;
+    if (r.text) return r.text;
+    stats.last = r.reason;
+  }
+  if (e - s > MIN_CHUNK) {
+    const m = Math.round((s + e) / 2);
+    note(SKILL, `${mmss(s)}–${mmss(e)} rifiutato (${stats.last}), lo spezzo in due.`);
+    const [x, y] = await Promise.all([transcribeRange(url, s, m, apiKey, stats), transcribeRange(url, m, e, apiKey, stats)]);
+    return x + "\n" + y;
+  }
+  stats.gaps.push(`${mmss(s)}–${mmss(e)}`);
+  return `[${mmss(s)}] [non trascritto: il modello ha rifiutato questo tratto (${stats.last})]`;
+}
+
 async function transcribeViaGemini(url, duration, apiKey) {
   const chunks = [];
   for (let s = 0; s < duration; s += CHUNK_SECONDS) chunks.push([s, Math.min(s + CHUNK_SECONDS, duration)]);
   note(SKILL, `trascrizione via Gemini dall'URL: ${chunks.length} pezzi da ${CHUNK_SECONDS / 60} min.`);
-  const prompt = (s) => `${TRANSCRIBE_PROMPT}
-Questo è il segmento che parte da ${mmss(s)}: i marcatori devono essere il tempo assoluto dall'inizio del video, non dall'inizio del segmento.`;
-  const results = await Promise.all(chunks.map(([s, e]) => generate(SKILL, {
-    apiKey, model: "gemini-flash-latest",
-    parts: [videoPart(url, { start: s, end: e, fps: 0.05 }), { text: prompt(s) }],
-  })));
-  const tokens = results.reduce((n, r) => n + r.promptTokens, 0);
-  note(SKILL, `trascrizione: ${tokens} token in ingresso.`);
-  return parseTimestamped(results.map(r => r.text).join("\n"));
+  const stats = { tokens: 0, gaps: [], last: null };
+  const texts = await Promise.all(chunks.map(([s, e]) => transcribeRange(url, s, e, apiKey, stats)));
+  note(SKILL, `trascrizione: ${stats.tokens} token in ingresso.`);
+  if (stats.gaps.length) note(SKILL, `ATTENZIONE: tratti non trascritti: ${stats.gaps.join(", ")}.`);
+  return parseTimestamped(texts.join("\n"));
 }
 
 // Metadati dalla YouTube Data API v3, quando yt-dlp non può. Chiave: il campo
@@ -258,7 +306,9 @@ export async function prep(url, dir, { useSubs = false, id } = {}) {
     });
   } else if (!useSubs && (blocks = transcribeAudio(dir, url, !blocked))) {
     writeFileSync(transcriptPath, blocks.map(b => `[${b.start}] ${b.text}`).join("\n") + "\n");
-  } else if (blocked) {
+  // Audio non scaricabile ma chiave Google presente: meglio Gemini dall'URL
+  // che i sottotitoli automatici, che non hanno punteggiatura né parlanti.
+  } else if (blocked || (!useSubs && loadGeminiKey(SKILL))) {
     const key = loadGeminiKey(SKILL, { required: true });
     blocks = await transcribeViaGemini(url, info.duration, key);
     if (!blocks) die("Gemini non ha prodotto una trascrizione.");
